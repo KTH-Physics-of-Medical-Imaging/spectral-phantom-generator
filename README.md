@@ -10,8 +10,9 @@ The first thing that has to be done is the image segmentation. This is done via 
 ### Material extraction
 After having obtained a segmentation of the image, the next step is to run [material_extractor.py](material_extractor.py). This script uses the image and its segmentation to find the material distributions of your choice within the image. The default implementation extracts iodine, gadolinium, calcium and water distributions, but this may be changed according to your preference. 
 There are two types of material extractor classes implemented, namely:
-- [Subtraction extractor](material_extractor.py#L100)
-- [Change of basis extractor](material_extractor.py#L200)
+- [Subtraction extractor](material_extractor.py#L26)
+- [Change of basis extractor](material_extractor.py#L201)
+  
 #### Subtraction extractor
 The subtraction extractor is meant for contrast-enhanced CT images where one want to extract the material distribution of the contrast agent. 
 An example where this could be used is to extract the iodine distribution in a contrast-enhanced image enabling generation of phantoms for K-edge imaging purposes. 
@@ -32,7 +33,7 @@ $$a_{\mathrm{Contrast_i}}(x) := \frac{\mu_{\mathrm{Contrast_i}}(x, E_{\mathrm{ef
 
 where the numerator is the theoretical attenuation of contrast material $i$ at energy $E_{\mathrm{effective}}$.
 
-Upon removing the attenuation due to contrast, we form the virtual non-contrast (VNC) image $$\mu_{\mathrm{VNC}}(x, E_{\mathrm{effective}}) := \mu_{\mathrm{CT\~image}}(x) - \mu_{\mathrm{Contrast}}(x,E_{\mathrm{effective}})$$ that can be used as input to the [change-of-basis extractor](change-of-basis-extractor).
+Upon removing the attenuation due to contrast, we form the virtual non-contrast (VNC) image $$\mu_{\mathrm{VNC}}(x, E_{\mathrm{effective}}) := \mu_{\mathrm{CT\~image}}(x) - \mu_{\mathrm{Contrast}}(x,E_{\mathrm{effective}})$$ that can be used as input to the [change-of-basis extractor](#change-of-basis-extractor).
 
 #### Change-of-basis extractor
 This extractor utilize the tissue attenuation information within each organ $\mu_{\mathrm{Tissue}}(E)$ and projects it onto a user-defined material basis of $M$ materials (water and calcium per default)
