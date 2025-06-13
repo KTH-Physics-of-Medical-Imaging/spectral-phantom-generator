@@ -20,7 +20,7 @@ This class subtracts (hence its name) the tabulated attenuation $\mu_{\mathrm{Ti
 
 $$\mu_{\mathrm{Contrast}}(x,E_{\mathrm{effective}}) = f(\mu_{\mathrm{CT\~image}}(x) - \mu_{\mathrm{Tissue}}(E_{\mathrm{effective}}))$$
 
-leaving only the attenuation due to contrast. The function $$f$$ denotes smoothing and morphological operations to remove unwanted structures and noise. 
+leaving only the attenuation due to contrast. The function $$f$$ denotes smoothing and morphological operations to remove unwanted structures and noise. The effective energy is defined in [parameters.py](data/parameters.py#22).
 
 The class can split the subtracted attenuation $\mu_{\mathrm{Contrast}}$ into $i=1,\ldots,C$ different materials (like iodine and gadolinium as per default) by setting
 
@@ -47,6 +47,17 @@ The extracted coefficients $b_m$ within each organ are then weighted pixel-by-pi
 $$w(x) = \dfrac{\mu_{\mathrm{input}}(x)}{\sum_{m=1}^M a_m\mu_{m}(E_{\mathrm{effective}})},$$
 
 yielding the final material distributions as $a_m(x) := b_m w(x)$.
+
+### Parameters
+
+If you want to change e.g. what tissue atomic composition database or what segmentation tasks for TotalSegmentator are used, you can change the parameters in [parameters.py](data/parameters.py).
+
+## Dependencies
+
+To run this package you need to install the [requirements](requirements.txt). For example by running
+```bash
+pip install -r requirements.txt
+```
 
 ## Disclaimer
 The SPG should not be used for clincial use. It is only intended to be used for generating data for research purposes. The resulting phantoms have not been clinicially validated and may not represent real material distributions.
