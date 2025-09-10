@@ -72,7 +72,7 @@ class SubtractionExtractor(MaterialExtractor):
     
     def __init__(self, extraction_materials, atomic_composition_table, material_fractions={}, 
                  skip_atom=None, skip_tissue_type=None, skip_organ=None, clip_values=(None, None), 
-                 filter_result=False, dilated_tissue_type_to_remove=None):
+                 filter_result=False, dilated_tissue_type_to_remove=None, skip_unlisted_organs=False):
         super().__init__(extraction_materials, skip_tissue_type, skip_organ, atomic_composition_table)
         #assert isinstance(self.extraction_material, Atom), "Subtraction atom must be of type Atom"
 
@@ -98,6 +98,8 @@ class SubtractionExtractor(MaterialExtractor):
 
         self.dilated_tissue_type_to_remove = dilated_tissue_type_to_remove
 
+        self.skip_unlisted_organs = skip_unlisted_organs
+
     def extract(self, image=None):
         """ Extract the subtraction of the segmentations """
 
@@ -121,8 +123,11 @@ class SubtractionExtractor(MaterialExtractor):
 
             if organ_name.lower() in self.material_fractions.keys(): # check if current organ name is in given material fractions list
                 material_weights = self.material_fractions[organ_name.lower()]
+            elif self.skip_unlisted_organs:
+                continue # if no weights are given, assume no material contribution
             else:
-                continue # if no weights are given, assume no material contribution, should be optional to set to first material or similar
+                material_weights = np.zeros(self.n_materials)
+                material_weights[0] = 1 # only keep first material if no weights are given
 
             organ_local_density = segmentation == organ_number # could be updated to allow fractions
             attenuation = tissue.linear_att_coeff(self.case.effective_kev, skip_atom=self.skip_atom)
