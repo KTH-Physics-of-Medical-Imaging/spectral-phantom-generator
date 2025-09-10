@@ -111,12 +111,12 @@ class SubtractionExtractor(MaterialExtractor):
 
             tissue = Tissue(organ_name, self.atomic_composition_table)
             
-            if 'lobe' in organ_name.lower():
-                print('Found lung lobe, skipping', organ_name, tissue.type)
+            if organ_name.lower() in map(str.lower, self.skip_organ if self.skip_organ is not None else []):
+                print(f'Found {organ_name} and will skip it')
                 continue
              
             if self.skip_tissue_type is not None and isinstance(tissue.type, tuple(self.skip_tissue_type)):
-                print('Skipping', organ_name)
+                print(f'Found {tissue.type} in {organ_name} and will skip it')
                 continue
 
             if organ_name.lower() in self.material_fractions.keys(): # check if current organ name is in given material fractions list
