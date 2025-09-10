@@ -1,6 +1,5 @@
-from tissue import *# should be updated to TS labels and not WW labels
 tissue_types = {
-'bone' : [
+'Bone' : [
     #"Skeleton - cartilage",
     "Male shoulder girdle - sternum",
     "Sacrum - male",
@@ -38,9 +37,20 @@ tissue_types = {
     "Male shoulder girdle - sternum",
     "Skeletal - cortical bone"
 ],
-'fat' : [
+'Fat' : [
     "Adipose tissue - 1",
     "Adipose tissue - 2",
     "Adipose tissue - 3",
-]
+],
+'Cartilage' : [
+    "Skeleton - cartilage",
+],
+'Lung' : [
+    "lung-blood filled and inflated",
+],
+'Muscle' : [
+    "Muscle - skeletal 1",
+    "Muscle - skeletal 2",
+    "Muscle - skeletal 3",
+],
 }

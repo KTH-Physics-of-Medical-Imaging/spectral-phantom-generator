@@ -71,40 +71,30 @@ class Atom:
     def __str__(self):
         return self.name
 
+
 class TissueType:
+    _type_classes = {}
+
     def __init__(self, name):
         self.name = name
         self.tissue_types = TISSUETYPES
 
     @property
     def type(self):
+        name_lower = self.name.lower()
         for tissue_type, tissue_list in self.tissue_types.items():
-            tissue_list = [t.lower() for t in tissue_list]  # Convert to lowercase for case-insensitive comparison
-            if self.name.lower() in tissue_list:
-                self._type = tissue_type
-                break
-        else:
-            self._type = 'soft_tissue'
+            if name_lower in map(str.lower, tissue_list):
+                cls = globals()[tissue_type] # create class handle from string
+                return cls(self.name)
+        return SoftTissue(self.name)
 
-        if self._type == 'bone':
-            return Bone(self.name)
-        elif self._type == 'fat':
-            return Fat(self.name)
-        else:
-            return SoftTissue(self.name)
-        
-class Bone(TissueType):
-    def __init__(self, name):
-        super().__init__(name)
+class Bone(TissueType): pass
+class SoftTissue(TissueType): pass
+class Fat(TissueType): pass
+class Cartilage(TissueType): pass
+class Lung(TissueType): pass
+class Muscle(TissueType): pass
 
-class SoftTissue(TissueType):
-    def __init__(self, name):
-        super().__init__(name)
-
-class Fat(TissueType):
-    def __init__(self, name):
-        super().__init__(name)
- 
 
 
 class Tissue:
@@ -182,6 +172,12 @@ class Tissue:
 
             density += candidate_density * weight
 
+        # Join the candidate names with commas if there are multiple, else keep as is
+        if len(self.atomic_composition_table_candidates) == 1:
+            atomic_composition.name = self.atomic_composition_table_candidates[0]
+        else:
+            atomic_composition.name = ' / '.join(self.atomic_composition_table_candidates)
+        
         return atomic_composition, density
     
     @property
@@ -222,7 +218,7 @@ if __name__ == '__main__':
     import matplotlib.pyplot as plt
 
     atomic_composition_table = TissueAtomicCompositionTable()
-    t = Tissue('kidney_left', atomic_composition_table)
+    t = Tissue('lung_upper_lobe_right', atomic_composition_table)
     print(t.atomic_composition_table_candidates)
     print(t.candidate_weights)
     print(t.density)

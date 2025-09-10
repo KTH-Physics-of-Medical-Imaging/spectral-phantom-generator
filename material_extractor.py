@@ -7,9 +7,10 @@ from case import Case
 from data.parameters import SEGMENTATION_TASKS, BODY_SEGMENTATION_TASKS, CT_FILENAME
 
 class MaterialExtractor:
-    def __init__(self, extraction_materials, skip_tissue_type, atomic_composition_table: TissueAtomicCompositionTable):
+    def __init__(self, extraction_materials, skip_tissue_type, skip_organ, atomic_composition_table: TissueAtomicCompositionTable):
         self.extraction_materials = extraction_materials
         self.skip_tissue_type = skip_tissue_type
+        self.skip_organ = skip_organ
         self.atomic_composition_table = atomic_composition_table
 
     def set_case(self, case: Case):
@@ -70,9 +71,9 @@ class SubtractionExtractor(MaterialExtractor):
 
     
     def __init__(self, extraction_materials, atomic_composition_table, material_fractions={}, 
-                 skip_atom=None, skip_tissue_type=None, clip_values=(None, None), filter_result=False,
-                 dilated_tissue_type_to_remove=None):
-        super().__init__(extraction_materials, skip_tissue_type, atomic_composition_table)
+                 skip_atom=None, skip_tissue_type=None, skip_organ=None, clip_values=(None, None), 
+                 filter_result=False, dilated_tissue_type_to_remove=None):
+        super().__init__(extraction_materials, skip_tissue_type, skip_organ, atomic_composition_table)
         #assert isinstance(self.extraction_material, Atom), "Subtraction atom must be of type Atom"
 
         if isinstance(self.extraction_materials, Tissue):
@@ -121,7 +122,7 @@ class SubtractionExtractor(MaterialExtractor):
             if organ_name.lower() in self.material_fractions.keys(): # check if current organ name is in given material fractions list
                 material_weights = self.material_fractions[organ_name.lower()]
             else:
-                continue # if no weights are given, assume no material contribution
+                continue # if no weights are given, assume no material contribution, should be optional to set to first material or similar
 
             organ_local_density = segmentation == organ_number # could be updated to allow fractions
             attenuation = tissue.linear_att_coeff(self.case.effective_kev, skip_atom=self.skip_atom)
@@ -238,8 +239,8 @@ class ChangeOfBasisExtractor(MaterialExtractor):
         Returns a list of SimpleITK images, each representing the local density of a basis material.
     """
         
-    def __init__(self, extraction_materials, atomic_composition_table, skip_atom=None, skip_tissue_type=None):
-        super().__init__(extraction_materials, skip_tissue_type, atomic_composition_table)
+    def __init__(self, extraction_materials, atomic_composition_table, skip_atom=None, skip_tissue_type=None, skip_organ=None):
+        super().__init__(extraction_materials, skip_tissue_type, skip_organ, atomic_composition_table)
         assert isinstance(self.extraction_materials, list), "ChangeOfBasisExtractor.extraction_material must be list of len > 1"
         assert len(self.extraction_materials) > 1, "ChangeOfBasisExtractor.extraction_material must be list of len > 1"
         self.n_materials = len(self.extraction_materials)
@@ -355,7 +356,8 @@ if __name__ == '__main__':
                                                                     'cartilage':[.2,.8],
                                                                    }, 
                                                     clip_values=(0, None), 
-                                                    skip_tissue_type=[Bone, Fat], 
+                                                    skip_tissue_type=[Bone, Fat],
+                                                    skip_organ=['cartilage', 'lobe_lung_left', 'lobe_lung_right'],
                                                     filter_result=True, 
                                                     dilated_tissue_type_to_remove=Bone)
         subtractionExtractor.set_case(case)
