@@ -56,9 +56,9 @@ class Segmenter:
             if save_segmentations:
                 self.save_seg(subsegmentations[-1], Path(self.output_dir, f'{task}.nii.gz'))
 
-    def segment_subtask(self, task='total', fast=False): # total, tissue_4_types, body
+    def segment_subtask(self, task='total', fast=False, device='gpu'): # total, tissue_4_types, body
         assert self.input is not None, 'Input is not set'
-        seg = totalsegmentator(self.input, task=task, fast=fast, license_number=self.license_number)
+        seg = totalsegmentator(self.input, task=task, fast=fast, license_number=self.license_number, device=device)
         return seg
     
     def save_seg(self, seg, path):

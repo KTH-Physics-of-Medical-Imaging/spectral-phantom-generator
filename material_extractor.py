@@ -1,7 +1,8 @@
 import SimpleITK as sitk
 import numpy as np
-from scipy.ndimage import gaussian_filter
-from tissue import Tissue, Atom, Bone, Fat, TissueAtomicCompositionTable
+from scipy.ndimage import gaussian_filter, label
+from image_reader import ImageReader
+from tissue import Tissue, Atom, Bone, Fat, Lung, TissueAtomicCompositionTable
 from utils import *
 from case import Case
 from data.parameters import SEGMENTATION_TASKS, BODY_SEGMENTATION_TASKS, CT_FILENAME
@@ -17,11 +18,112 @@ class MaterialExtractor:
         self.case = case
         self.segmentation = case.segmentation
 
-    def apply_noise_to_attenuation(self, attenuation, shape):
-        """ Apply noise to the attenuation values """
-        noise = np.random.normal(1, 0.05, shape)
-        noise = gaussian_filter(noise, 1)
-        return attenuation * noise
+    def apply_noise_to_attenuation(self, attenuation, shape=None, relative_sigma=0.01, smooth_sigma=.1):
+        """Apply a small additive perturbation to attenuation values."""
+        attenuation = np.asarray(attenuation)
+        if attenuation.ndim == 0:
+            if attenuation <= 0:
+                return float(attenuation)
+            noise = np.random.normal(0.0, relative_sigma * float(attenuation))
+            return max(0.0, float(attenuation) + noise)
+
+        noise_shape = attenuation.shape if shape is None else shape
+        noise_scale = relative_sigma * np.abs(attenuation)
+        noise = np.random.normal(0.0, noise_scale, noise_shape)
+        if smooth_sigma is not None and smooth_sigma > 0:
+            noise = gaussian_filter(noise, smooth_sigma)
+        return np.clip(attenuation + noise, 0.0, None)
+
+    def _dilation_kernel(self, radius):
+        kernel = [radius] * 3
+        if not self.case.continuous_slices:
+            kernel[ImageReader.get_z_index(self.case.CT)] = 0
+        return kernel
+
+    def _component_structure(self, image):
+        structure = np.ones((3, 3, 3), dtype=np.uint8)
+        if not self.case.continuous_slices:
+            z_index = ImageReader.get_z_index(image)
+            structure = np.zeros((3, 3, 3), dtype=np.uint8)
+            slices = [slice(None), slice(None), slice(None)]
+            slices[z_index] = 1
+            structure[tuple(slices)] = 1
+        return structure
+
+    def refine_tissue_masks_from_threshold(
+        self,
+        type_to_refine=Bone,
+        hu_threshold=80,
+        opening_radius=1,
+        closing_radius=1,
+        distance_smoothing_sigma=0.0,
+    ):
+        """Refine tissue labels by keeping thresholded CT components that intersect them."""
+        segmentation = sitk.GetArrayFromImage(self.segmentation)
+        refined_segmentation = segmentation.copy()
+
+        threshold_mask = sitk.GetArrayFromImage(to_HU(self.case.CT, self.case.effective_kev)) > hu_threshold
+        components, n_components = label(threshold_mask, structure=self._component_structure(threshold_mask))
+
+        component_label = np.zeros(n_components + 1, dtype=segmentation.dtype)
+        component_overlap = np.zeros(n_components + 1, dtype=np.int64)
+        tissue_masks = {}
+        refined_count = 0
+
+        for organ_number, organ_name in self.case.segmentation_names.items():
+            tissue = Tissue(organ_name, self.atomic_composition_table)
+            if not isinstance(tissue.type, type_to_refine):
+                continue
+
+            old_mask = segmentation == organ_number
+            tissue_masks[organ_number] = old_mask
+            organ_components = components[old_mask]
+            component_ids, overlaps = np.unique(organ_components[organ_components > 0], return_counts=True)
+            for component_id, overlap in zip(component_ids, overlaps):
+                if overlap > component_overlap[component_id]:
+                    component_label[component_id] = organ_number
+                    component_overlap[component_id] = overlap
+            refined_count += 1
+
+        threshold_labels = component_label[components]
+        refined_labels = np.zeros_like(threshold_labels)
+        for organ_number, old_mask in tissue_masks.items():
+            organ_mask = sitk.GetImageFromArray(old_mask.astype(np.uint8))
+            organ_mask.CopyInformation(self.segmentation)
+            if opening_radius > 0:
+                organ_mask = sitk.BinaryMorphologicalOpening(organ_mask, self._dilation_kernel(opening_radius))
+            if closing_radius > 0:
+                organ_mask = sitk.BinaryMorphologicalClosing(organ_mask, self._dilation_kernel(closing_radius))
+            if distance_smoothing_sigma > 0:
+                distance = sitk.SignedMaurerDistanceMap(
+                    organ_mask,
+                    insideIsPositive=True,
+                    squaredDistance=False,
+                    useImageSpacing=False,
+                )
+                distance = sitk.DiscreteGaussian(distance, variance=distance_smoothing_sigma**2)
+                organ_mask = distance > 0
+
+            smoothed_mask = sitk.GetArrayFromImage(organ_mask) > 0
+            threshold_additions = (threshold_labels == organ_number) & smoothed_mask & ~old_mask
+            refined_labels[old_mask | threshold_additions] = organ_number
+        threshold_labels = refined_labels
+
+        new_voxels = (threshold_labels > 0) & (segmentation != threshold_labels)
+        refined_segmentation[new_voxels] = threshold_labels[new_voxels]
+
+        refined_image = sitk.GetImageFromArray(refined_segmentation.astype(segmentation.dtype))
+        refined_image.CopyInformation(self.segmentation)
+        self.segmentation = refined_image
+        self.case.segmentation = refined_image
+
+        refined_voxels = int(np.count_nonzero(new_voxels))
+        kept_components = int(np.count_nonzero(component_label[1:]))
+        print(
+            f'Refined {refined_count} {type_to_refine.__name__} labels from CT threshold: '
+            f'kept {kept_components}/{n_components} components and added {refined_voxels} voxels '
+            f'(HU>{hu_threshold})'
+        )
 
 
 class SubtractionExtractor(MaterialExtractor):
@@ -72,7 +174,13 @@ class SubtractionExtractor(MaterialExtractor):
     
     def __init__(self, extraction_materials, atomic_composition_table, material_fractions={}, 
                  skip_atom=None, skip_tissue_type=None, skip_organ=None, clip_values=(None, None), 
-                 filter_result=False, dilated_tissue_type_to_remove=None, skip_unlisted_organs=False):
+                 filter_result=False, dilated_tissue_type_to_remove=None, skip_unlisted_organs=False,
+                 dilated_tissue_radius=1, dilated_tissue_hu_threshold=None,
+                 dilated_tissue_hu_search_radius=None, remove_high_hu_from_material=False,
+                 refine_bone_masks=False, bone_refinement_hu_threshold=100,
+                 bone_refinement_opening_radius=1, bone_refinement_closing_radius=1,
+                 bone_refinement_distance_smoothing_sigma=0.0,
+                 material_opening_radius=0):
         super().__init__(extraction_materials, skip_tissue_type, skip_organ, atomic_composition_table)
         #assert isinstance(self.extraction_material, Atom), "Subtraction atom must be of type Atom"
 
@@ -96,9 +204,33 @@ class SubtractionExtractor(MaterialExtractor):
 
         self.filter_result = filter_result
 
-        self.dilated_tissue_type_to_remove = dilated_tissue_type_to_remove
+        if not isinstance(dilated_tissue_type_to_remove, list):
+            self.dilated_tissue_type_to_remove = [dilated_tissue_type_to_remove]
+        else:
+            self.dilated_tissue_type_to_remove = dilated_tissue_type_to_remove
+        self.dilated_tissue_radius = dilated_tissue_radius
+        self.dilated_tissue_hu_threshold = dilated_tissue_hu_threshold
+        self.dilated_tissue_hu_search_radius = dilated_tissue_hu_search_radius
+        self.remove_high_hu_from_material = remove_high_hu_from_material
+        self.refine_bone_masks = refine_bone_masks
+        self.bone_refinement_hu_threshold = bone_refinement_hu_threshold
+        self.bone_refinement_opening_radius = bone_refinement_opening_radius
+        self.bone_refinement_closing_radius = bone_refinement_closing_radius
+        self.bone_refinement_distance_smoothing_sigma = bone_refinement_distance_smoothing_sigma
+        self.material_opening_radius = material_opening_radius
 
         self.skip_unlisted_organs = skip_unlisted_organs
+
+    def set_case(self, case: Case):
+        super().set_case(case)
+        if self.refine_bone_masks:
+            self.refine_tissue_masks_from_threshold(
+                type_to_refine=Bone,
+                hu_threshold=self.bone_refinement_hu_threshold,
+                opening_radius=self.bone_refinement_opening_radius,
+                closing_radius=self.bone_refinement_closing_radius,
+                distance_smoothing_sigma=self.bone_refinement_distance_smoothing_sigma,
+            )
 
     def extract(self, image=None):
         """ Extract the subtraction of the segmentations """
@@ -117,7 +249,7 @@ class SubtractionExtractor(MaterialExtractor):
                 print(f'Found {organ_name} and will skip it')
                 continue
              
-            if self.skip_tissue_type is not None and isinstance(tissue.type, tuple(self.skip_tissue_type)):
+            if not self._is_relevant_extraction_organ(organ_name, tissue):
                 print(f'Found {tissue.type} in {organ_name} and will skip it')
                 continue
 
@@ -129,14 +261,12 @@ class SubtractionExtractor(MaterialExtractor):
                 material_weights = np.zeros(self.n_materials)
                 material_weights[0] = 1 # only keep first material if no weights are given
 
-            organ_local_density = segmentation == organ_number # could be updated to allow fractions
-            attenuation = tissue.linear_att_coeff(self.case.effective_kev, skip_atom=self.skip_atom)
 
             organ_local_density = segmentation == organ_number # could be updated to allow fractions
             attenuation = tissue.linear_att_coeff(self.case.effective_kev, skip_atom=self.skip_atom)
 
-            if tissue.is_lesion:
-                attenuation = self.apply_noise_to_attenuation(attenuation, organ_local_density.shape)
+            #if tissue.is_lesion:
+            attenuation = self.apply_noise_to_attenuation(attenuation)
 
             attenuation = attenuation * organ_local_density # construct attenuation map for the organ
             organ_material = ct_array[organ_local_density] - attenuation[organ_local_density] # subtract to get material contribution within the organ
@@ -164,8 +294,12 @@ class SubtractionExtractor(MaterialExtractor):
                 material = self.filter_material_map(material)
 
             if self.dilated_tissue_type_to_remove is not None:
-                print('Removing dilated tissue type', self.dilated_tissue_type_to_remove)
-                material = self.remove_dilated_tissue_type(material, self.dilated_tissue_type_to_remove)
+                for tissue_type in self.dilated_tissue_type_to_remove:
+                    print('Removing dilated tissue type', self.dilated_tissue_type_to_remove)
+                    material = self.remove_dilated_tissue_type(material, tissue_type)
+
+            if self.material_opening_radius > 0:
+                material = self.open_material_map(material, self.material_opening_radius)
 
             leftovers -= material # calculate what is left: i.e. the VNC when subtracting iodine
 
@@ -175,19 +309,58 @@ class SubtractionExtractor(MaterialExtractor):
         
         return materials_, leftovers
     
+    def _is_relevant_extraction_organ(self, organ_name, tissue):
+        if organ_name.lower() in map(str.lower, self.skip_organ if self.skip_organ is not None else []):
+            return False
+
+        if self.skip_tissue_type is not None:
+            skip_tissue_types = self.skip_tissue_type
+            if not isinstance(skip_tissue_types, (list, tuple)):
+                skip_tissue_types = [skip_tissue_types]
+            if isinstance(tissue.type, tuple(skip_tissue_types)):
+                return False
+
+        if self.skip_unlisted_organs and organ_name.lower() not in self.material_fractions:
+            return False
+
+        return True
+
     def remove_dilated_tissue_type(self, material, type_to_remove=Bone):
         """ Dilate bone masks and remove them from the material map to avoid bone leakage """
         for organ_number, organ_name in self.case.segmentation_names.items():
             tissue = Tissue(organ_name, self.atomic_composition_table)
             print(tissue.type)
             if isinstance(tissue.type, type_to_remove):
+                print('Dilating and removing', organ_name, 'from material map')
                 bone_map = self.segmentation == organ_number
-                kernel = [1] * 3
-                if not self.case.continuous_slices:
-                    kernel[ImageReader.z_axis_index(self.case.CT)] = 0 # set z dilate to 0
-                bone_map = sitk.BinaryDilate(bone_map, kernel)
-                material = sitk.Mask(material, sitk.Not(bone_map), outsideValue=0)
+                kernel = [7] * 3
+                #kernel[ImageReader.get_z_index(self.case.CT)] = 0 # set z dilate to 0
+                bone_map_expanded = sitk.BinaryDilate(bone_map, kernel)
+                bone_map_edge = sitk.Subtract(bone_map_expanded, bone_map) # only keep the dilated part
+                possible_bone_pixels = self.case.CT > to_mu(80, self.case.effective_kev) # keep high HU values inside expanded bone mask to refine the mask
+                bone_map_edge = sitk.Mask(bone_map_edge, possible_bone_pixels, outsideValue=0)
+                bone_map_expanded = sitk.Add(bone_map_edge, bone_map) # add original bone mask to the filtered dilated part
+                print('Bone mask before and after dilation:', sitk.GetArrayFromImage(bone_map).sum(), sitk.GetArrayFromImage(bone_map_expanded).sum())
+                print('Unique values in bone_map:', np.unique(sitk.GetArrayFromImage(bone_map)))
+                # Update segmentation so that the bone mask includes the dilated bone region
+                bone_map_expanded = sitk.ConnectedComponent(bone_map_expanded)
+                bone_map_expanded = sitk.RelabelComponent(bone_map_expanded, sortByObjectSize=True)
+                bone_map_expanded = sitk.Equal(bone_map_expanded, 1)
+                #bone_map_expanded = sitk.BinaryMorphologicalOpening(bone_map_expanded, [1]*3)
+
+                bone_map_expanded = sitk.Median(bone_map_expanded, [1]*3)
+
+                self.case.segmentation = sitk.Mask(self.case.segmentation, sitk.Not(bone_map_expanded), outsideValue=organ_number)
+                self.segmentation = self.case.segmentation
+        material = sitk.Mask(material, sitk.Not(bone_map_expanded), outsideValue=0)
+                
         return material
+
+    def open_material_map(self, material, radius):
+        """Remove small material islands by opening the positive material support."""
+        material_mask = material > 0
+        material_mask = sitk.BinaryMorphologicalOpening(material_mask, self._dilation_kernel(radius))
+        return sitk.Mask(material, material_mask, outsideValue=0)
 
     
     def filter_material_map(self, material):
@@ -316,7 +489,7 @@ if __name__ == '__main__':
     import os
 
     parser = argparse.ArgumentParser(description='Material extraction from CT images.')
-    parser.add_argument('--datadir', type=str, default='/Users/joelva/Documents/datasets/kits23/dataset', help='Directory containing dataset')
+    parser.add_argument('--datadir', type=str, default='/mnt/data0/kits23/', help='Directory containing dataset')
     parser.add_argument('--ct_filename', type=str, help='The filename of the input ct file', default=CT_FILENAME)    
     parser.add_argument('--savedir', type=str, default=None, help='Directory to save results')
     parser.add_argument('--cases', type=str, default='0', help='Slice or list of cases to process, e.g. "0:10" or "1,2,3"')
@@ -326,8 +499,9 @@ if __name__ == '__main__':
     datadir = args.datadir
     savepath = args.savedir if args.savedir is not None else datadir
 
-    subdirs = sorted([d for d in os.listdir(datadir) if Path(datadir, d).is_dir()]) # sort dirs
+    subdirs = sorted([d for d in os.listdir(datadir) if 'case' in d and Path(datadir, d).is_dir()]) # sort dirs
     
+    print(len(subdirs))
     if ':' in args.cases:
         start, end = args.cases.split(':')
         cases = slice(int(start) if start else None, int(end) if end else None)
@@ -348,27 +522,27 @@ if __name__ == '__main__':
 
         os.makedirs(savedir, exist_ok=True)
 
-        case = Case(subdir, ct_filename=args.ct_filename, read_midslice_only=False, read_slices=None, crop_to_organ=['kidney_left', 'kidney_right'])
+        case = Case(subdir, ct_filename=args.ct_filename, read_midslice_only=False, read_slices=None)#, crop_to_organ=['kidney_left', 'kidney_right'])
         print(case.CT.GetSize(), case.CT.GetSpacing(), case.CT.GetOrigin(), case.CT.GetDirection())
         atomicCompTable = TissueAtomicCompositionTable()
-        subtractionExtractor = SubtractionExtractor([Atom('I', density=0.02), Atom('Gd', density=0.004)], 
+        subtractionExtractor = SubtractionExtractor([Atom('I', density=0.001)], 
                                                     atomicCompTable, 
-                                                    material_fractions={ 'kidney_left':[.9,.1], 
-                                                                    'kidney_right':[.9,.1],
-                                                                    'aorta':[.8,.2],
-                                                                    'liver':[.85,.15],
-                                                                    'blood':[.8,.2],
-                                                                    'cartilage':[.2,.8],
-                                                                   }, 
                                                     clip_values=(0, None), 
                                                     skip_tissue_type=[Bone, Fat],
-                                                    skip_organ=['cartilage', 'lobe_lung_left', 'lobe_lung_right'],
+                                                    skip_organ=['cartilage', 'lobe_lung_left', 'lobe_lung_right', 'lung_lower_lobe_right', 'lung_lower_lobe_left'],
                                                     filter_result=True, 
-                                                    dilated_tissue_type_to_remove=Bone)
+                                                    dilated_tissue_type_to_remove=[Bone],
+                                                    refine_bone_masks=True,
+                                                    bone_refinement_hu_threshold=80,
+                                                    bone_refinement_opening_radius=3,
+                                                    bone_refinement_closing_radius=1,
+                                                    bone_refinement_distance_smoothing_sigma=0,
+                                                    material_opening_radius=1,
+                                                    )
         subtractionExtractor.set_case(case)
         subtracted_materials, vnc = subtractionExtractor.extract()
         
-        twoBasisExtractor = ChangeOfBasisExtractor([Tissue('water'), Atom('Ca')], atomicCompTable)
+        twoBasisExtractor = ChangeOfBasisExtractor([Tissue('water', density=0.001), Atom('Ca', density=0.001)], atomicCompTable)
         twoBasisExtractor.set_case(case)
         twoBasis_materials = twoBasisExtractor.extract(vnc)
 
@@ -411,8 +585,9 @@ if __name__ == '__main__':
             fig, axs = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows), sharex=True, sharey=True)
             axs=axs.flatten()
             print(axs.shape)
+            clims =[[None, None], [None, None], [0,10], [0,1000], [0,150]] 
             for i, im in enumerate(images):
-                im=axs[i].imshow(im.squeeze().T, cmap='gray')
+                im=axs[i].imshow(im.squeeze().T, cmap='gray', clim=clims[i])
                 axs[i].set_title(titles[i])
                 plt.colorbar(im, ax=axs[i], fraction=0.046, pad=0.04)
                 

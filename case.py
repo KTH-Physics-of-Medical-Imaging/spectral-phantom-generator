@@ -124,10 +124,21 @@ class Case:
             # Relabel the segmentation image
             unique_labels = sitk.GetArrayViewFromImage(segmentation).astype(int)
             unique_labels = np.unique(unique_labels)
-            new_label_map = {label: idx + len(label_names) for idx, label in enumerate(unique_labels) if label != 0}
+            next_label = max(label_names.keys(), default=0) + 1
+            new_label_map = {}
+            for label in unique_labels:
+                if label == 0:
+                    continue
+                new_label_map[label] = next_label
+                next_label += 1
             
             for current_label, new_label in tqdm(new_label_map.items(), desc='Remapping labels...'):
-                relabeled_segmentation = sitk.Maximum(relabeled_segmentation, sitk.Cast(segmentation == current_label, segmentation.GetPixelID()) * new_label)
+                label_mask = segmentation == current_label
+                relabeled_segmentation = sitk.Mask(relabeled_segmentation, sitk.Not(label_mask), outsideValue=0)
+                relabeled_segmentation = sitk.Add(
+                    relabeled_segmentation,
+                    sitk.Cast(label_mask, relabeled_segmentation.GetPixelID()) * new_label,
+                )
                 label_names[new_label] = classes[current_label]
         
         segmentation = relabeled_segmentation

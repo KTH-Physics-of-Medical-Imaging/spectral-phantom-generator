@@ -14,9 +14,9 @@ ATOMIC_COMPOSITION_TABLE = 'woodardwhite.csv'
 CT_FILENAME = 'imaging.nii.gz'  
 # segmentation class map, has to be in the same format as the TotalSegmentator class map
 SEGMENTATION_CLASS_MAP = class_map # must contain body class map as well
-SEGMENTATION_TASKS = ['total', 'tissue_4_types']
+SEGMENTATION_TASKS = ['total', 'vertebrae_body', 'tissue_4_types', 'lung_vessels']
 BODY_SEGMENTATION_TASKS = ['body']
-ALL_SEGMENTATION_TASKS = SEGMENTATION_TASKS + BODY_SEGMENTATION_TASKS
+ALL_SEGMENTATION_TASKS = BODY_SEGMENTATION_TASKS + SEGMENTATION_TASKS 
 BODY_LABEL = 'body_trunc'
 # effective keV for the CT images, used for attenuation correction
-EFFECTIVE_KEV = 70  # should be read from metadata when possible, hardcoded as 70 right now.
+EFFECTIVE_KEV = 65  # should be read from metadata when possible, hardcoded as 70 right now.

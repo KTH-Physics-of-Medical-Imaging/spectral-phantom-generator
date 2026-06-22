@@ -99,7 +99,7 @@ class Muscle(TissueType): pass
 
 class Tissue:
 
-    def __init__(self, name, atomic_composition_table: TissueAtomicCompositionTable=None):
+    def __init__(self, name, atomic_composition_table: TissueAtomicCompositionTable=None, density=None):
         self.name = name
         self.segmentation_name = name
         self.is_lesion = 'lesion' in name or 'cyst' in name
@@ -110,6 +110,9 @@ class Tissue:
 
         self.atomic_composition_table_candidates = self.get_atomic_composition_table_candidates(atomic_composition_table)
         self.atomic_composition, self.density = self.get_atomic_composition(atomic_composition_table)
+
+        if density is not None:
+            self.density = density
 
     @property
     def atoms(self):
